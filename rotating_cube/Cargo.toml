@@ -1,9 +1,0 @@
-[package]
-name = "rotating_cube"
-version = "0.1.0"
-authors = ["Anthony J. Thibault <tony@highfidelity.io>"]
-edition = "2018"
-
-[dependencies]
-kiss3d = "0.18.0"
-nalgebra = "0.17.1"
