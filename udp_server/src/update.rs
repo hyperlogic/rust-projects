@@ -8,7 +8,7 @@ use crate::packet::Packet;
 
 type UserMap = HashMap<std::net::SocketAddr, Packet>;
 
-fn update_users_map(users_map: &mut UserMap, packet_receiver: &mpsc::Receiver<Packet>) {
+fn copy_packets(users_map: &mut UserMap, packet_receiver: &mpsc::Receiver<Packet>) {
     // update users_map with the most recent packets
     while let Ok(packet) = packet_receiver.try_recv() {
         println!(
@@ -19,13 +19,29 @@ fn update_users_map(users_map: &mut UserMap, packet_receiver: &mpsc::Receiver<Pa
     }
 }
 
+fn remove_stale_users(users_map: &mut UserMap, now: &time::SystemTime) {
+    const USER_TIMEOUT: time::Duration = time::Duration::from_millis(5000);
+
+    // remove any users that have timed out.
+    let mut addrs_to_remove: Vec<std::net::SocketAddr> = Vec::new();
+    for (addr, packet) in users_map.iter() {
+        let elapsed = now.duration_since(packet.timestamp).unwrap();
+        if elapsed > USER_TIMEOUT {
+            addrs_to_remove.push(*addr);
+        }
+    }
+    for addr in &addrs_to_remove {
+        println!("Removing stale user {}", addr);
+        users_map.remove(&addr);
+    }
+}
+
 #[allow(unreachable_code)]
 pub fn update_loop(
-    _socket: UdpSocket,
+    socket: UdpSocket,
     packet_receiver: mpsc::Receiver<Packet>,
 ) -> std::io::Result<()> {
     {
-        const USER_TIMEOUT: time::Duration = time::Duration::from_millis(5000);
         const UPDATE_FREQUENCY: u64 = 10;
         const LOOP_DURATION: time::Duration =
             time::Duration::from_micros(1000000 / UPDATE_FREQUENCY);
@@ -35,20 +51,16 @@ pub fn update_loop(
         loop {
             let loop_start = time::SystemTime::now();
 
-            update_users_map(&mut users_map, &packet_receiver);
+            copy_packets(&mut users_map, &packet_receiver);
+            remove_stale_users(&mut users_map, &loop_start);
 
-            // remove any users that have timed out.
-            let now = time::SystemTime::now();
-            let mut addrs_to_remove: Vec<std::net::SocketAddr> = Vec::new();
-            for (addr, packet) in users_map.iter() {
-                let elapsed = now.duration_since(packet.timestamp).unwrap();
-                if elapsed > USER_TIMEOUT {
-                    addrs_to_remove.push(*addr);
+            for (my_addr, _) in users_map.iter() {
+                for (addr, packet) in users_map.iter() {
+                    if addr == my_addr {
+                        continue;
+                    }
+                    socket.send_to(&packet.data, &my_addr)?;
                 }
-            }
-            for addr in &addrs_to_remove {
-                println!("Removing stale user {}", addr);
-                users_map.remove(&addr);
             }
 
             // TODO: for each user send all other users that have been updated.
@@ -56,7 +68,7 @@ pub fn update_loop(
 
             let elapsed = loop_start.elapsed().unwrap();
 
-            println!("Tick! users = {}, elapsed = {:?}", users_map.len(), elapsed,);
+            println!("Tick! users = {}, elapsed = {:?}", users_map.len(), elapsed);
 
             if elapsed < LOOP_DURATION {
                 thread::sleep(LOOP_DURATION - elapsed);
